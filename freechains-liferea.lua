@@ -1,10 +1,22 @@
 #!/usr/bin/env lua5.3
 
+local socket = require 'socket'
+local json   = require 'json'
+
 --[[
 freechains://?cmd=publish&cfg=/data/ceu/ceu-libuv/ceu-libuv-freechains/cfg/config-8400.lua
 freechains::-1?cmd=publish&cfg=/data/ceu/ceu-libuv/ceu-libuv-freechains/cfg/config-8400.lua
 freechains://<address>:<port>/<chain>/<work>/<hash>?
 ]]
+
+local function ASR (cnd, msg)
+    msg = msg or 'malformed command'
+    if not cnd then
+        io.stderr:write('ERROR: '..msg..'\n')
+        os.exit(1)
+    end
+    return cnd
+end
 
 local url = assert((...))
 
@@ -27,19 +39,7 @@ DAEMON = {
 }
 daemon = DAEMON.address..':'..DAEMON.port
 
-local socket = require 'socket'
-local c = assert(socket.connect(DAEMON.address,DAEMON.port))
-
 -------------------------------------------------------------------------------
-
-local function ASR (cnd, msg)
-    msg = msg or 'malformed command'
-    if not cnd then
-        io.stderr:write('ERROR: '..msg..'\n')
-        os.exit(1)
-    end
-    return cnd
-end
 
 function hash2hex (hash)
     local ret = ''
@@ -59,6 +59,30 @@ function escape (html)
         ["/"] = "&#47;"
     }))
 end -- https://github.com/kernelsauce/turbo/blob/master/turbo/escape.lua
+
+function iter (chain)
+    local function one (hash)
+        local c = assert(socket.connect(DAEMON.address,DAEMON.port))
+        c:send("FC chain get\n"..chain.."\n"..hash.."\n")
+	local ret = c:receive('*a')
+
+        local block = json.decode(ret)
+        coroutine.yield(block)
+
+        for _, front in ipairs(block.fronts) do
+	    one(front)
+        end
+    end
+
+    return coroutine.wrap(
+        function ()
+           local c = assert(socket.connect(DAEMON.address,DAEMON.port))
+           c:send("FC chain genesis\n"..chain.."\n")
+           local hash = c:receive('*l')
+           one(hash)
+        end
+    )
+end
 
 -------------------------------------------------------------------------------
 
@@ -101,7 +125,11 @@ if cmd=='new' or cmd=='subscribe' then
     end
 
     -- subscribe
-    c:send("FC chain create\n"..chain.."\n")
+    local c = assert(socket.connect(DAEMON.address,DAEMON.port))
+    c:send("FC chain create\n"..chain.."\nrw\n\n\n\n")
+
+    local exe = 'dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://'..daemon..chain..'/?cmd=atom"'
+    os.execute(exe)
 
 elseif cmd == 'publish' then
     local f = io.popen('zenity --text-info --editable --title="Publish to '..chain..'"')
@@ -112,6 +140,7 @@ elseif cmd == 'publish' then
         goto END
     end
 
+    local c = assert(socket.connect(DAEMON.address,DAEMON.port))
     c:send("FC chain put\n"..chain.."\nutf8\nnow\nfalse\n"..payload.."\n\n")
 
 --[=[
@@ -174,62 +203,55 @@ elseif cmd == 'atom' then
         CFG.external.liferea = CFG.external.liferea or {}
         T = CFG.external.liferea
 
-        --for i=CHAIN.zeros, 255 do
-for i=1,1 do
-            T[chain] = T[chain] or 0
-            --for node in FC.get_iter({key=CHAIN.key,zeros=i}, T[CHAIN], DAEMON) do
-	    for i=1,0 do
-                T[chain] = (node.seq>T[chain] and node.seq) or T[chain]
-                if node.pub then
-                    payload = node.pub.payload --or ('Removed publication: '..node.pub.removal))
-                    title = escape(string.match(payload,'([^\n]*)'))
+        T[chain] = T[chain] or 0
+        for block in iter(chain) do
+            local payload = block.hashable.payload
+            local title = escape(string.match(payload,'([^\n]*)'))
 
-                    payload = payload .. [[
+            payload = payload .. [[
 
 
 -------------------------------------------------------------------------------
 
 <!--
-- [X](freechains:/]]..chain..'/'..i..'/'..node.pub.hash..[[/?cmd=republish)
+- [X](freechains:/]]..chain..'/'..block.hash..[[/?cmd=republish)
 Republish Contents
-- [X](freechains:/]]..chain..'/'..i..'/'..node.hash..[[/?cmd=removal)
+- [X](freechains:/]]..chain..'/'..block.hash..[[/?cmd=removal)
 Inappropriate Contents
 -->
 ]]
 
-                    -- freechains links
-                    payload = string.gsub(payload, '(%[.-%]%(freechains:)(/.-%))', '%1//'..daemon..'%2')
+            -- freechains links
+            payload = string.gsub(payload, '(%[.-%]%(freechains:)(/.-%))', '%1//'..daemon..'%2')
 
-                    -- markdown
+            -- markdown
 --if false then
-                    do
-                        local tmp = os.tmpname()
-                        local md = assert(io.popen('pandoc -r markdown -w html > '..tmp, 'w'))
-                        md:write(payload)
-                        assert(md:close())
-                        local html = assert(io.open(tmp))
-                        payload = html:read('*a')
-                        html:close()
-                        os.remove(tmp)
-                    end
+            do
+                local tmp = os.tmpname()
+                local md = assert(io.popen('pandoc -r markdown -w html > '..tmp, 'w'))
+                md:write(payload)
+                assert(md:close())
+                local html = assert(io.open(tmp))
+                payload = html:read('*a')
+                html:close()
+                os.remove(tmp)
+            end
 --end
 
-                    payload = escape(payload)
+            payload = escape(payload)
 
-                    entry = TEMPLATES.entry
-                    entry = gsub(entry, '__TITLE__',   title)
-                    entry = gsub(entry, '__CHAIN__',   chain)
-                    entry = gsub(entry, '__HASH__',    node.hash)
-                    entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', node.pub.timestamp/1000000))
-                    entry = gsub(entry, '__PAYLOAD__', payload)
-                    entries[#entries+1] = entry
-                end
-            end
+            entry = TEMPLATES.entry
+            entry = gsub(entry, '__TITLE__',   title)
+            entry = gsub(entry, '__CHAIN__',   chain)
+            entry = gsub(entry, '__HASH__',    block.hash)
+            entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', block.hashable.timestamp))
+            entry = gsub(entry, '__PAYLOAD__', payload)
+            entries[#entries+1] = entry
+        end
 
-            -- avoids polluting CFG if only genesis so far
-            if T[chain] > 0 then
-                CFG.external.liferea[chain] = nil
-            end
+        -- avoids polluting CFG if only genesis so far
+        if T[chain] > 0 then
+            CFG.external.liferea[chain] = nil
         end
 
         -- MENU
