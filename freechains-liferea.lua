@@ -1,6 +1,6 @@
 #!/usr/bin/env lua5.3
 
-local FC = require 'freechains'
+local socket = require 'socket'
 
 local HASH_BYTES = 32
 
@@ -33,7 +33,7 @@ freechains://<address>:<port>/<chain>/<work>/<hash>?
 ]]
 
 local address, port, res = string.match(url, 'freechains://([^:]*):([^/]*)/(.*)')
---print(address , port , res)
+print(address , port , res)
 ASR(address and port and res)
 log:write('URL: '..res..'\n')
 
@@ -42,9 +42,7 @@ DAEMON = {
     port    = ASR(tonumber(port)),
 }
 daemon = DAEMON.address..':'..DAEMON.port
-
-CFG = FC.send(0x0500, nil, DAEMON)
---print('>>>', FC.tostring(CFG,'plain'))
+local c = assert(socket.connect(DAEMON.address,DAEMON.port))
 
 -- new
 if not cmd then
@@ -131,16 +129,11 @@ if cmd=='new' or cmd=='subscribe' then
     end
 
     -- subscribe
-    FC.send(0x0400, {
-        chain = {
-            key   = key,
-            zeros = assert(tonumber(zeros)),
-            peers = peers,
-        }
-    }, DAEMON)
+    c:send("FC chain create\n"..key.."\n")
 
     -- publish announcement to //0/
 
+    --[=[
     local was_sub = CFG.chains[key]
     if not was_sub then
         payload = ''
@@ -176,6 +169,7 @@ Subscribe to []]..key..[[](freechains:/]]..key..[[/?cmd=subscribe&peer=]]..daemo
             os.execute(exe)
         end
     end
+    ]=]
 
 elseif cmd == 'publish' then
     local f = io.popen('zenity --text-info --editable --title="Publish to '..key..'/"')
@@ -196,14 +190,9 @@ elseif cmd == 'publish' then
     end
     zeros = string.sub(zeros,1,-2)
 
-    FC.send(0x0300, {
-        chain = {
-            key   = key,
-            zeros = assert(tonumber(zeros)),
-        },
-        payload = payload,
-    }, DAEMON)
+    c:send("FC chain put\n"..key.."\nutf8\nnow\nfalse\n"..payload.."\n\n")
 
+--[=[
 elseif cmd == 'republish' then
     local old_key   = key
     local old_zeros = zeros
@@ -253,6 +242,7 @@ elseif cmd == 'removal' then
         },
         removal = block,
     }, DAEMON)
+]=]
 
 elseif cmd == 'atom' then
     TEMPLATES =
