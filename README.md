@@ -12,14 +12,15 @@ https://github.com/Freechains/liferea
 
 ```
 $ sudo apt-get install liferea lua5.3 lua-json lua-socket pandoc zenity
-$ sudo make install  # on this repository
+$ cd <to-this-repository-directory>
+$ sudo make install
 ```
 
 ## Setup
 
 - Start Freechains at `localhost:8330`.
 
-- Open `liferea`
+- Open `liferea`.
 
 - Delete default feeds:
 
