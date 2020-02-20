@@ -39,6 +39,17 @@ DAEMON = {
 }
 daemon = DAEMON.address..':'..DAEMON.port
 
+local CFG = {
+    chains = {}
+}
+do
+    local f = io.open(os.getenv('HOME')..'/.config/freechains-liferea.json')
+    if f then
+        CFG = json.decode(f:read('*a'))
+        f:close()
+    end
+end
+
 -------------------------------------------------------------------------------
 
 function hash2hex (hash)
@@ -61,25 +72,50 @@ function escape (html)
 end -- https://github.com/kernelsauce/turbo/blob/master/turbo/escape.lua
 
 function iter (chain)
-    local function one (hash)
+    local visited = {}
+    local heads   = {}
+
+    local function one (hash,init)
+        if visited[hash] then return end
+        visited[hash] = true
+
         local c = assert(socket.connect(DAEMON.address,DAEMON.port))
         c:send("FC chain get\n"..chain.."\n"..hash.."\n")
-	local ret = c:receive('*a')
+        local ret = c:receive('*a')
 
         local block = json.decode(ret)
-        coroutine.yield(block)
+        if not init then
+            coroutine.yield(block)
+        end
 
         for _, front in ipairs(block.fronts) do
-	    one(front)
+            one(front)
+        end
+
+        if #block.fronts == 0 then
+            heads[#heads+1] = hash
         end
     end
 
     return coroutine.wrap(
         function ()
-           local c = assert(socket.connect(DAEMON.address,DAEMON.port))
-           c:send("FC chain genesis\n"..chain.."\n")
-           local hash = c:receive('*l')
-           one(hash)
+            local cfg = CFG.chains[chain] or {}
+            CFG.chains[chain] = cfg
+            if cfg.heads then
+                for _,hash in ipairs(cfg.heads) do
+                    one(hash,true)
+                end
+            else
+                local c = assert(socket.connect(DAEMON.address,DAEMON.port))
+                c:send("FC chain genesis\n"..chain.."\n")
+                local hash = c:receive('*l')
+                one(hash,true)
+            end
+
+            cfg.heads = heads
+            local f = assert(io.open(os.getenv('HOME')..'/.config/freechains-liferea.json','w'))
+            f:write(json.encode(CFG)..'\n')
+            f:close()
         end
     )
 end
@@ -185,9 +221,8 @@ elseif cmd == 'atom' then
         return string.gsub(a, b, function() return c end)
     end
 
-    CFG   = {}
-    -- TODO: check if chain exists // chain = ...
     if not chain then
+        error 'TODO'
         entries = {}
         entry = TEMPLATES.entry
         entry = gsub(entry, '__TITLE__',   'not subscribed')
@@ -199,11 +234,6 @@ elseif cmd == 'atom' then
     else
         entries = {}
 
-        CFG.external = CFG.external or {}
-        CFG.external.liferea = CFG.external.liferea or {}
-        T = CFG.external.liferea
-
-        T[chain] = T[chain] or 0
         for block in iter(chain) do
             local payload = block.hashable.payload
             local title = escape(string.match(payload,'([^\n]*)'))
@@ -249,11 +279,6 @@ Inappropriate Contents
             entries[#entries+1] = entry
         end
 
-        -- avoids polluting CFG if only genesis so far
-        if T[chain] > 0 then
-            CFG.external.liferea[chain] = nil
-        end
-
         -- MENU
         do
             entry = TEMPLATES.entry
@@ -290,7 +315,7 @@ Inappropriate Contents
 end
 
 ::OK::
-os.execute('zenity --info --text="OK"')
+--os.execute('zenity --info --text="OK"')
 goto END
 
 ::ERROR::
