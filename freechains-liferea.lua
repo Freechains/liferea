@@ -70,42 +70,42 @@ end
 
 -- subscribe
 if not cmd then
-    key, cmd = string.match(res, '^(/[^/]*)/%?cmd=(subscribe)')
+    chain, cmd = string.match(res, '^(/[^/]*)/%?cmd=(subscribe)')
 end
 if not cmd then
-    key, cmd, address, port = string.match(res, '^(/[^/]*)/%?cmd=(subscribe)&peer=(.*):(.*)')
+    chain, cmd, address, port = string.match(res, '^(/[^/]*)/%?cmd=(subscribe)&peer=(.*):(.*)')
 end
 
 -- publish
 if not cmd then
-    key, cmd = string.match(res, '^(/[^/]*)/%?cmd=(publish)')
+    chain, cmd = string.match(res, '^(/[^/]*)/%?cmd=(publish)')
 end
 
 -- atom
 if not cmd then
-    key, cmd = string.match(res, '^(/.*)/%?cmd=(atom)')
+    chain, cmd = string.match(res, '^(/.*)/%?cmd=(atom)')
 end
 
 log:write('INFO: .'..cmd..'.\n')
 
 if cmd=='new' or cmd=='subscribe' then
-    -- get key
+    -- get chain
     if cmd == 'new' then
         local f = io.popen('zenity --entry --title="Join new chain" --text="Chain path:"')
-        key = f:read('*a')
-        key = string.sub(key,1,-2)
+        chain = f:read('*a')
+        chain = string.sub(chain,1,-2)
         local ok = f:close()
         if not ok then
-            log:write('ERR: '..key..'\n')
+            log:write('ERR: '..chain..'\n')
             goto END
         end
     end
 
     -- subscribe
-    c:send("FC chain create\n"..key.."\n")
+    c:send("FC chain create\n"..chain.."\n")
 
 elseif cmd == 'publish' then
-    local f = io.popen('zenity --text-info --editable --title="Publish to '..key..'"')
+    local f = io.popen('zenity --text-info --editable --title="Publish to '..chain..'"')
     local payload = f:read('*a')
     local ok = f:close()
     if not ok then
@@ -113,7 +113,7 @@ elseif cmd == 'publish' then
         goto END
     end
 
-    c:send("FC chain put\n"..key.."\nutf8\nnow\nfalse\n"..payload.."\n\n")
+    c:send("FC chain put\n"..chain.."\nutf8\nnow\nfalse\n"..payload.."\n\n")
 
 --[=[
 elseif cmd == 'removal' then
@@ -157,13 +157,13 @@ elseif cmd == 'atom' then
         return string.gsub(a, b, function() return c end)
     end
 
-    CHAIN = { key=key } --CFG.chains[key]
     CFG   = {}
-    if not CHAIN then
+    -- TODO: check if chain exists // chain = ...
+    if not chain then
         entries = {}
         entry = TEMPLATES.entry
         entry = gsub(entry, '__TITLE__',   'not subscribed')
-        entry = gsub(entry, '__CHAIN__',   key)
+        entry = gsub(entry, '__CHAIN__',   chain)
         entry = gsub(entry, '__HASH__',    string.rep('00', 32))
         entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', os.time()))
         entry = gsub(entry, '__PAYLOAD__', 'not subscribed')
@@ -177,11 +177,10 @@ elseif cmd == 'atom' then
 
         --for i=CHAIN.zeros, 255 do
 for i=1,1 do
-            local chain_id = key
-            T[chain_id] = T[chain_id] or 0
-            --for node in FC.get_iter({key=CHAIN.key,zeros=i}, T[chain_id], DAEMON) do
+            T[chain] = T[chain] or 0
+            --for node in FC.get_iter({key=CHAIN.key,zeros=i}, T[CHAIN], DAEMON) do
 	    for i=1,0 do
-                T[chain_id] = (node.seq>T[chain_id] and node.seq) or T[chain_id]
+                T[chain] = (node.seq>T[chain] and node.seq) or T[chain]
                 if node.pub then
                     payload = node.pub.payload --or ('Removed publication: '..node.pub.removal))
                     title = FC.escape(string.match(payload,'([^\n]*)'))
@@ -192,9 +191,9 @@ for i=1,1 do
 -------------------------------------------------------------------------------
 
 <!--
-- [X](freechains:/]]..CHAIN.key..'/'..i..'/'..node.pub.hash..[[/?cmd=republish)
+- [X](freechains:/]]..chain..'/'..i..'/'..node.pub.hash..[[/?cmd=republish)
 Republish Contents
-- [X](freechains:/]]..CHAIN.key..'/'..i..'/'..node.hash..[[/?cmd=removal)
+- [X](freechains:/]]..chain..'/'..i..'/'..node.hash..[[/?cmd=removal)
 Inappropriate Contents
 -->
 ]]
@@ -220,7 +219,7 @@ Inappropriate Contents
 
                     entry = TEMPLATES.entry
                     entry = gsub(entry, '__TITLE__',   title)
-                    entry = gsub(entry, '__CHAIN__',   CHAIN.key)
+                    entry = gsub(entry, '__CHAIN__',   chain)
                     entry = gsub(entry, '__HASH__',    node.hash)
                     entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', node.pub.timestamp/1000000))
                     entry = gsub(entry, '__PAYLOAD__', payload)
@@ -229,8 +228,8 @@ Inappropriate Contents
             end
 
             -- avoids polluting CFG if only genesis so far
-            if T[chain_id] > 0 then
-                CFG.external.liferea[chain_id] = nil
+            if T[chain] > 0 then
+                CFG.external.liferea[chain] = nil
             end
         end
 
@@ -238,15 +237,15 @@ Inappropriate Contents
         do
             entry = TEMPLATES.entry
             entry = gsub(entry, '__TITLE__',   'Menu')
-            entry = gsub(entry, '__CHAIN__',   CHAIN.key)
+            entry = gsub(entry, '__CHAIN__',   chain)
             entry = gsub(entry, '__HASH__',    FC.hash2hex(string.rep('\0',32)))
             entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', 25000))
             entry = gsub(entry, '__PAYLOAD__', FC.escape([[
 <ul>
-]]..(CHAIN.key~='/' and '' or [[
+]]..(chain~='/' and '' or [[
 <li> <a href="freechains://]]..daemon..[[/?cmd=new">[X]</a> join new chain
 ]])..[[
-<li> <a href="freechains://]]..daemon..CHAIN.key..[[/?cmd=publish">[X]</a> publish to "]]..CHAIN.key..[["
+<li> <a href="freechains://]]..daemon..chain..[[/?cmd=publish">[X]</a> publish to "]]..chain..[["
 </ul>
 ]]))
             entries[#entries+1] = entry
@@ -254,10 +253,10 @@ Inappropriate Contents
     end
 
     feed = TEMPLATES.feed
-    feed = gsub(feed, '__TITLE__',    key)
-    feed = gsub(feed, '__UPDATED__',  os.date('!%Y-%m-%dT%H:%M:%SZ', os.time()))
-    feed = gsub(feed, '__CHAIN__', key)
-    feed = gsub(feed, '__ENTRIES__',  table.concat(entries,'\n'))
+    feed = gsub(feed, '__TITLE__',   chain)
+    feed = gsub(feed, '__UPDATED__', os.date('!%Y-%m-%dT%H:%M:%SZ', os.time()))
+    feed = gsub(feed, '__CHAIN__',   chain)
+    feed = gsub(feed, '__ENTRIES__', table.concat(entries,'\n'))
 
     f = io.stdout --assert(io.open(dir..'/'..key..'.xml', 'w'))
     f:write(feed)
