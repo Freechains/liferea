@@ -1,8 +1,10 @@
 #!/usr/bin/env lua5.3
 
-local socket = require 'socket'
-
-local HASH_BYTES = 32
+--[[
+freechains://?cmd=publish&cfg=/data/ceu/ceu-libuv/ceu-libuv-freechains/cfg/config-8400.lua
+freechains::-1?cmd=publish&cfg=/data/ceu/ceu-libuv/ceu-libuv-freechains/cfg/config-8400.lua
+freechains://<address>:<port>/<chain>/<work>/<hash>?
+]]
 
 local url = assert((...))
 
@@ -15,6 +17,21 @@ if string.sub(url,1,13) ~= 'freechains://' then
     os.exit(0)
 end
 
+local address, port, res = string.match(url, 'freechains://([^:]*):([^/]*)(/.*)')
+ASR(address and port and res)
+log:write('URL: '..res..'\n')
+
+DAEMON = {
+    address = address,
+    port    = ASR(tonumber(port)),
+}
+daemon = DAEMON.address..':'..DAEMON.port
+
+local socket = require 'socket'
+local c = assert(socket.connect(DAEMON.address,DAEMON.port))
+
+-------------------------------------------------------------------------------
+
 local function ASR (cnd, msg)
     msg = msg or 'malformed command'
     if not cnd then
@@ -24,15 +41,15 @@ local function ASR (cnd, msg)
     return cnd
 end
 
-FC = {}
-function FC.hash2hex (hash)
+function hash2hex (hash)
     local ret = ''
     for i=1, string.len(hash) do
         ret = ret .. string.format('%02X', string.byte(string.sub(hash,i,i)))
     end
     return ret
 end
-function FC.escape (html)
+
+function escape (html)
     return (string.gsub(html, "[}{\">/<'&]", {
         ["&"] = "&amp;",
         ["<"] = "&lt;",
@@ -43,25 +60,7 @@ function FC.escape (html)
     }))
 end -- https://github.com/kernelsauce/turbo/blob/master/turbo/escape.lua
 
---[[
-freechains://?cmd=publish&cfg=/data/ceu/ceu-libuv/ceu-libuv-freechains/cfg/config-8400.lua
-freechains::-1?cmd=publish&cfg=/data/ceu/ceu-libuv/ceu-libuv-freechains/cfg/config-8400.lua
-
-freechains://<address>:<port>/<chain>/<work>/<hash>?
-
-]]
-
-local address, port, res = string.match(url, 'freechains://([^:]*):([^/]*)(/.*)')
---print(address , port , res)
-ASR(address and port and res)
-log:write('URL: '..res..'\n')
-
-DAEMON = {
-    address = address,
-    port    = ASR(tonumber(port)),
-}
-daemon = DAEMON.address..':'..DAEMON.port
-local c = assert(socket.connect(DAEMON.address,DAEMON.port))
+-------------------------------------------------------------------------------
 
 -- new
 if not cmd then
@@ -183,7 +182,7 @@ for i=1,1 do
                 T[chain] = (node.seq>T[chain] and node.seq) or T[chain]
                 if node.pub then
                     payload = node.pub.payload --or ('Removed publication: '..node.pub.removal))
-                    title = FC.escape(string.match(payload,'([^\n]*)'))
+                    title = escape(string.match(payload,'([^\n]*)'))
 
                     payload = payload .. [[
 
@@ -215,7 +214,7 @@ Inappropriate Contents
                     end
 --end
 
-                    payload = FC.escape(payload)
+                    payload = escape(payload)
 
                     entry = TEMPLATES.entry
                     entry = gsub(entry, '__TITLE__',   title)
@@ -238,9 +237,9 @@ Inappropriate Contents
             entry = TEMPLATES.entry
             entry = gsub(entry, '__TITLE__',   'Menu')
             entry = gsub(entry, '__CHAIN__',   chain)
-            entry = gsub(entry, '__HASH__',    FC.hash2hex(string.rep('\0',32)))
+            entry = gsub(entry, '__HASH__',    hash2hex(string.rep('\0',32)))
             entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', 25000))
-            entry = gsub(entry, '__PAYLOAD__', FC.escape([[
+            entry = gsub(entry, '__PAYLOAD__', escape([[
 <ul>
 ]]..(chain~='/' and '' or [[
 <li> <a href="freechains://]]..daemon..[[/?cmd=new">[X]</a> join new chain
