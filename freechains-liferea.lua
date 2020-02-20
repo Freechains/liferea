@@ -127,12 +127,12 @@ if not cmd then
     cmd = string.match(res, '^/%?cmd=(new)')
 end
 
--- subscribe
+-- join
 if not cmd then
-    chain, cmd = string.match(res, '^(/[^/]*)/%?cmd=(subscribe)')
+    chain, cmd = string.match(res, '^(/[^/]*)/%?cmd=(join)')
 end
 if not cmd then
-    chain, cmd, address, port = string.match(res, '^(/[^/]*)/%?cmd=(subscribe)&peer=(.*):(.*)')
+    chain, cmd, address, port = string.match(res, '^(/[^/]*)/%?cmd=(join)&peer=(.*):(.*)')
 end
 
 -- publish
@@ -147,7 +147,7 @@ end
 
 log:write('INFO: .'..cmd..'.\n')
 
-if cmd=='new' or cmd=='subscribe' then
+if cmd=='new' or cmd=='join' then
     -- get chain
     if cmd == 'new' then
         local f = io.popen('zenity --entry --title="Join new chain" --text="Chain path:"')
@@ -160,9 +160,9 @@ if cmd=='new' or cmd=='subscribe' then
         end
     end
 
-    -- subscribe
+    -- join
     local c = assert(socket.connect(DAEMON.address,DAEMON.port))
-    c:send("FC chain create\n"..chain.."\nrw\n\n\n\n")
+    c:send("FC chain join\n"..chain.."\nrw\n\n\n\n")
 
     local exe = 'dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://'..daemon..chain..'/?cmd=atom"'
     os.execute(exe)
