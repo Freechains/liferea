@@ -177,7 +177,8 @@ elseif cmd == 'publish' then
     end
 
     local c = assert(socket.connect(DAEMON.address,DAEMON.port))
-    c:send("FC chain put\n"..chain.."\nutf8\nnow\nfalse\n"..payload.."\n\n")
+    c:send("FC chain put\n"..chain.."\nutf8 EOF\nnow\nfalse\n\n"..payload.."\nEOF\n")
+    c:receive()
 
 --[=[
 elseif cmd == 'removal' then
