@@ -3,41 +3,7 @@
 local socket = require 'socket'
 local json   = require 'json'
 
---[[
-freechains://?cmd=publish&cfg=/data/ceu/ceu-libuv/ceu-libuv-freechains/cfg/config-8400.lua
-freechains::-1?cmd=publish&cfg=/data/ceu/ceu-libuv/ceu-libuv-freechains/cfg/config-8400.lua
-freechains://<address>:<port>/<chain>/<work>/<hash>?
-]]
-
-local function ASR (cnd, msg)
-    msg = msg or 'malformed command'
-    if not cnd then
-        io.stderr:write('ERROR: '..msg..'\n')
-        os.exit(1)
-    end
-    return cnd
-end
-
-local url = assert((...))
-
---local log = assert(io.open('/tmp/log.txt','a+'))
-local log = io.stderr
-log:write('URL: '..url..'\n')
-
-if string.sub(url,1,13) ~= 'freechains://' then
-    os.execute('xdg-open '..url)
-    os.exit(0)
-end
-
-local address, port, res = string.match(url, 'freechains://([^:]*):([^/]*)(/.*)')
-ASR(address and port and res)
-log:write('URL: '..res..'\n')
-
-DAEMON = {
-    address = address,
-    port    = ASR(tonumber(port)),
-}
-daemon = DAEMON.address..':'..DAEMON.port
+-------------------------------------------------------------------------------
 
 local CFG = {
     chains = {}
@@ -50,7 +16,29 @@ do
     end
 end
 
+local CMD = assert((...))
+
+local LOG = assert(io.open('/tmp/log.txt','a+'))
+--local LOG = io.stderr
+LOG:write('CMD: '..CMD..'\n')
+
+if string.sub(CMD,1,13) ~= 'freechains://' then
+    os.execute('xdg-open '..CMD)
+    os.exit(0)
+end
+
+CMD = string.match(CMD, 'freechains://(.*)')
+CMD = 'freechains '..string.gsub(CMD, '-', ' ')
+
 -------------------------------------------------------------------------------
+
+function exe (cmd)
+    LOG:write(cmd..'\n')
+    local f = io.popen(cmd)
+    local ret = f:read("*a")
+    local ok = f:close()
+    return ok and ret
+end
 
 function hash2hex (hash)
     local ret = ''
@@ -79,9 +67,7 @@ function iter (chain)
         if visited[hash] then return end
         visited[hash] = true
 
-        local c = assert(socket.connect(DAEMON.address,DAEMON.port))
-        c:send("FC chain get\n"..chain.."\n"..hash.."\n")
-        local ret = c:receive('*a')
+        local ret = exe('freechains chain get '..chain..' '..hash)
 
         local block = json.decode(ret)
         if not init then
@@ -106,9 +92,7 @@ function iter (chain)
                     one(hash,true)
                 end
             else
-                local c = assert(socket.connect(DAEMON.address,DAEMON.port))
-                c:send("FC chain genesis\n"..chain.."\n")
-                local hash = c:receive('*l')
+                local hash = exe('freechains chain genesis '..chain)
                 one(hash,true)
             end
 
@@ -122,77 +106,35 @@ end
 
 -------------------------------------------------------------------------------
 
--- new
-if not cmd then
-    cmd = string.match(res, '^/%?cmd=(new)')
-end
+if CMD == 'freechains chain join' then
 
--- join
-if not cmd then
-    chain, cmd = string.match(res, '^(/[^/]*)/%?cmd=(join)')
-end
-if not cmd then
-    chain, cmd, address, port = string.match(res, '^(/[^/]*)/%?cmd=(join)&peer=(.*):(.*)')
-end
-
--- publish
-if not cmd then
-    chain, cmd = string.match(res, '^(/[^/]*)/%?cmd=(publish)')
-end
-
--- atom
-if not cmd then
-    chain, cmd = string.match(res, '^(/.*)/%?cmd=(atom)')
-end
-
-log:write('INFO: .'..cmd..'.\n')
-
-if cmd=='new' or cmd=='join' then
-    -- get chain
-    if cmd == 'new' then
-        local f = io.popen('zenity --entry --title="Join new chain" --text="Chain path:"')
-        chain = f:read('*a')
-        chain = string.sub(chain,1,-2)
-        local ok = f:close()
-        if not ok then
-            log:write('ERR: '..chain..'\n')
-            goto END
-        end
+    local chain = exe('zenity --entry --title="Join new chain" --text="Chain path:"')
+    if not chain then
+        LOG:write('ERR: '..CMD..'\n')
+        goto END
     end
+    chain = string.sub(chain,1,-2)
+    exe(CMD..' '..chain)
+    exe('dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://chain-atom-'..chain..'"')
 
-    -- join
-    local c = assert(socket.connect(DAEMON.address,DAEMON.port))
-    c:send("FC chain join\n"..chain.."\nrw\n\n\n\n")
+elseif string.sub(CMD,1,21) == 'freechains chain post' then
 
-    local exe = 'dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://'..daemon..chain..'/?cmd=atom"'
-    os.execute(exe)
-
-elseif cmd == 'publish' then
-    local f = io.popen('zenity --text-info --editable --title="Publish to '..chain..'"')
-    local payload = f:read('*a')
-    local ok = f:close()
-    if not ok then
-        log:write('ERR: '..payload..'\n')
+    local chain = string.match(CMD, ' ([^ ]*)$')
+    local pay = exe('zenity --text-info --editable --title="Publish to '..chain..'"')
+    if not pay then
+        LOG:write('ERR: '..CMD..'\n')
         goto END
     end
 
-    local c = assert(socket.connect(DAEMON.address,DAEMON.port))
-    c:send("FC chain put\n"..chain.."\nutf8 EOF\nnow\nfalse\n\n"..payload.."\nEOF\n")
-    c:receive()
+    local file = os.tmpname()..'.pay'
+    local f = assert(io.open(file,'w')):write(pay..'\nEOF\n')
+    f:close()
+    exe(CMD..' file utf8 '..file..' --utf8-eof=EOF')
 
---[=[
-elseif cmd == 'removal' then
-    error'TODO'
-    FC.send(0x0300, {
-        chain = {
-            key   = key,
-            zeros = assert(tonumber(zeros)),
-        },
-        removal = block,
-    }, DAEMON)
-]=]
+elseif string.sub(CMD,1,21) == 'freechains chain atom' then
 
-elseif cmd == 'atom' then
+    local chain = string.match(CMD, ' ([^ ]*)$')
+
     TEMPLATES =
     {
         feed = [[
@@ -222,81 +164,66 @@ elseif cmd == 'atom' then
         return string.gsub(a, b, function() return c end)
     end
 
-    if not chain then
-        error 'TODO'
-        entries = {}
-        entry = TEMPLATES.entry
-        entry = gsub(entry, '__TITLE__',   'not subscribed')
-        entry = gsub(entry, '__CHAIN__',   chain)
-        entry = gsub(entry, '__HASH__',    string.rep('00', 32))
-        entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', os.time()))
-        entry = gsub(entry, '__PAYLOAD__', 'not subscribed')
-        entries[#entries+1] = entry
-    else
-        entries = {}
+    local entries = {}
 
-        for block in iter(chain) do
-            local payload = block.hashable.payload
-            local title = escape(string.match(payload,'([^\n]*)'))
+    for block in iter(chain) do
+        local payload = block.hashable.payload
+        local title = escape(string.match(payload,'([^\n]*)'))
 
-            payload = payload .. [[
+        payload = payload .. [[
 
 
 -------------------------------------------------------------------------------
 
 <!--
-- [X](freechains:/]]..chain..'/'..block.hash..[[/?cmd=republish)
+- [X](liferea:/]]..chain..'/'..block.hash..[[/?cmd=republish)
 Republish Contents
-- [X](freechains:/]]..chain..'/'..block.hash..[[/?cmd=removal)
+- [X](liferea:/]]..chain..'/'..block.hash..[[/?cmd=removal)
 Inappropriate Contents
 -->
 ]]
 
-            -- freechains links
-            payload = string.gsub(payload, '(%[.-%]%(freechains:)(/.-%))', '%1//'..daemon..'%2')
-
-            -- markdown
+        -- markdown
 --if false then
-            do
-                local tmp = os.tmpname()
-                local md = assert(io.popen('pandoc -r markdown -w html > '..tmp, 'w'))
-                md:write(payload)
-                assert(md:close())
-                local html = assert(io.open(tmp))
-                payload = html:read('*a')
-                html:close()
-                os.remove(tmp)
-            end
+        do
+            local tmp = os.tmpname()
+            local md = assert(io.popen('pandoc -r markdown -w html > '..tmp, 'w'))
+            md:write(payload)
+            assert(md:close())
+            local html = assert(io.open(tmp))
+            payload = html:read('*a')
+            html:close()
+            os.remove(tmp)
+        end
 --end
 
-            payload = escape(payload)
+        payload = escape(payload)
 
-            entry = TEMPLATES.entry
-            entry = gsub(entry, '__TITLE__',   title)
-            entry = gsub(entry, '__CHAIN__',   chain)
-            entry = gsub(entry, '__HASH__',    block.hash)
-            entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', block.hashable.timestamp))
-            entry = gsub(entry, '__PAYLOAD__', payload)
-            entries[#entries+1] = entry
-        end
+        entry = TEMPLATES.entry
+        entry = gsub(entry, '__TITLE__',   title)
+        entry = gsub(entry, '__CHAIN__',   chain)
+        entry = gsub(entry, '__HASH__',    block.hash)
+        entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', block.hashable.timestamp))
+        entry = gsub(entry, '__PAYLOAD__', payload)
+        entries[#entries+1] = entry
+    end
 
-        -- MENU
-        do
-            entry = TEMPLATES.entry
-            entry = gsub(entry, '__TITLE__',   'Menu')
-            entry = gsub(entry, '__CHAIN__',   chain)
-            entry = gsub(entry, '__HASH__',    hash2hex(string.rep('\0',32)))
-            entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', 25000))
-            entry = gsub(entry, '__PAYLOAD__', escape([[
+    -- MENU
+    do
+        entry = TEMPLATES.entry
+        entry = gsub(entry, '__TITLE__',   'Menu')
+        entry = gsub(entry, '__CHAIN__',   chain)
+        entry = gsub(entry, '__HASH__',    hash2hex(string.rep('\0',32)))
+        entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', 25000))
+        entry = gsub(entry, '__PAYLOAD__', escape([[
 <ul>
 ]]..(chain~='/' and '' or [[
-<li> <a href="freechains://]]..daemon..[[/?cmd=new">[X]</a> join new chain
+<li> <a href="freechains://chain-join">[X]</a> join new chain
 ]])..[[
-<li> <a href="freechains://]]..daemon..chain..[[/?cmd=publish">[X]</a> publish to "]]..chain..[["
+<li> <a href="freechains://chain-post-]]..chain..[[">[X]</a> post to "]]..chain..[["
 </ul>
 ]]))
-            entries[#entries+1] = entry
-        end
+        entries[#entries+1] = entry
     end
 
     feed = TEMPLATES.feed
@@ -324,4 +251,4 @@ os.execute('zenity --error')
 
 ::END::
 
-log:close()
+LOG:close()
