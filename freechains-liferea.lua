@@ -3,42 +3,100 @@
 local socket = require 'socket'
 local json   = require 'json'
 
--------------------------------------------------------------------------------
+local LOG = assert(io.open('/tmp/freechains-liferea-log.txt','a+'))
+--local LOG = io.stderr
 
 local CFG = {
+    first  = true,
     chains = {}
 }
-do
-    local f = io.open(os.getenv('HOME')..'/.config/freechains-liferea.json')
-    if f then
-        CFG = json.decode(f:read('*a'))
+
+function CFG_ (cmd)
+    local file = os.getenv('HOME')..'/.config/freechains-liferea.json'
+    if cmd == 'load' then
+        local f = io.open(file)
+        if f then
+            CFG = json.decode(f:read('*a'))
+            f:close()
+        end
+    else
+        local f = assert(io.open(file,'w'))
+        f:write(json.encode(CFG)..'\n')
         f:close()
     end
 end
 
-local CMD = assert((...))
+CFG_('load')
 
-local LOG = assert(io.open('/tmp/log.txt','a+'))
---local LOG = io.stderr
-LOG:write('CMD: '..CMD..'\n')
+-------------------------------------------------------------------------------
+
+function EXE (cmd)
+    LOG:write('EXE: '..cmd..'\n')
+    local f = io.popen(cmd)
+    local ret = f:read("*a")
+    local ok = f:close()
+    return ok and ret
+end
+
+function EXE_BG (cmd)
+    io.popen(cmd)
+end
+
+function EXE_FC (cmd,opts)
+    opts = opts or ''
+    return EXE('freechains --host=localhost:'..CFG.port..' '..opts..' '..string.sub(cmd,12))
+end
+
+-------------------------------------------------------------------------------
+
+local CMD = (...)
+LOG:write('CMD: '..tostring(CMD)..'\n')
+
+if CMD == nil then
+    if CFG.first then
+        CFG.first = false
+        CFG.port  = 8330
+        CFG_('save')
+        EXE('freechains host create /data/freechains/data/')
+        EXE_BG('freechains host start /data/freechains/data/')
+        EXE_FC('freechains chain join /')
+        EXE_BG('liferea')
+        EXE('dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://chain-atom-/"')
+    else
+        EXE_BG('freechains host start /data/freechains/data/')
+        EXE_BG('liferea')
+    end
+    os.exit(0)
+end
+
+if CMD == 'stop' then
+    EXE('killall liferea')
+    EXE_FC('freechains host stop')
+    os.exit(0)
+end
+
+-------------------------------------------------------------------------------
 
 if string.sub(CMD,1,13) ~= 'freechains://' then
     os.execute('xdg-open '..CMD)
     os.exit(0)
 end
 
+function assert (cnd, msg)
+    msg = msg or 'malformed command'
+    if not cnd then
+        LOG:write('ERROR: '..msg..'\n')
+        os.exit(1)
+    end
+    return cnd
+end
+
+-------------------------------------------------------------------------------
+
 CMD = string.match(CMD, 'freechains://(.*)')
 CMD = 'freechains '..string.gsub(CMD, '-', ' ')
 
 -------------------------------------------------------------------------------
-
-function exe (cmd)
-    LOG:write(cmd..'\n')
-    local f = io.popen(cmd)
-    local ret = f:read("*a")
-    local ok = f:close()
-    return ok and ret
-end
 
 function hash2hex (hash)
     local ret = ''
@@ -67,7 +125,8 @@ function iter (chain)
         if visited[hash] then return end
         visited[hash] = true
 
-        local ret = exe('freechains chain get '..chain..' '..hash)
+        LOG:write('freechains chain get '..chain..' '..hash..'\n')
+        local ret = EXE_FC('freechains chain get '..chain..' '..hash)
 
         local block = json.decode(ret)
         if not init then
@@ -92,14 +151,12 @@ function iter (chain)
                     one(hash,true)
                 end
             else
-                local hash = exe('freechains chain genesis '..chain)
+                local hash = EXE_FC('freechains chain genesis '..chain)
                 one(hash,true)
             end
 
             cfg.heads = heads
-            local f = assert(io.open(os.getenv('HOME')..'/.config/freechains-liferea.json','w'))
-            f:write(json.encode(CFG)..'\n')
-            f:close()
+            CFG_('save')
         end
     )
 end
@@ -108,19 +165,19 @@ end
 
 if CMD == 'freechains chain join' then
 
-    local chain = exe('zenity --entry --title="Join new chain" --text="Chain path:"')
+    local chain = EXE('zenity --entry --title="Join new chain" --text="Chain path:"')
     if not chain then
         LOG:write('ERR: '..CMD..'\n')
         goto END
     end
     chain = string.sub(chain,1,-2)
-    exe(CMD..' '..chain)
-    exe('dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://chain-atom-'..chain..'"')
+    EXE_FC(CMD..' '..chain)
+    EXE('dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://chain-atom-'..chain..'"')
 
 elseif string.sub(CMD,1,21) == 'freechains chain post' then
 
     local chain = string.match(CMD, ' ([^ ]*)$')
-    local pay = exe('zenity --text-info --editable --title="Publish to '..chain..'"')
+    local pay = EXE('zenity --text-info --editable --title="Publish to '..chain..'"')
     if not pay then
         LOG:write('ERR: '..CMD..'\n')
         goto END
@@ -129,7 +186,7 @@ elseif string.sub(CMD,1,21) == 'freechains chain post' then
     local file = os.tmpname()..'.pay'
     local f = assert(io.open(file,'w')):write(pay..'\nEOF\n')
     f:close()
-    exe(CMD..' file utf8 '..file..' --utf8-eof=EOF')
+    EXE_FC(CMD..' file utf8 '..file, '--utf8-eof=EOF')
 
 elseif string.sub(CMD,1,21) == 'freechains chain atom' then
 
