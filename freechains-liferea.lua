@@ -55,9 +55,11 @@ function EXE (cmd)
     local f = io.popen(cmd)
     local ret = f:read("*a")
     local ok = f:close()
-    assert(not ok or ret=='' or string.sub(ret,-1,-1)=='\n')
     --LOG:write('>>> ret='..tostring(ret)..'\n')
-    return ok and string.sub(ret,1,-2)
+    if ok and string.sub(ret,-1,-1)=='\n' then
+        ret = string.sub(ret,1,-2)  -- except "--text-info" enters here
+    end
+    return ok and ret
 end
 
 function EXE_BG (cmd)
