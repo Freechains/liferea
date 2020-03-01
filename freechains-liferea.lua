@@ -3,27 +3,34 @@
 local socket = require 'socket'
 local json   = require 'json'
 
+local PATH_CFG  = os.getenv('HOME')..'/.config/freechains-liferea.json'
+local PATH_DATA = os.getenv('HOME')..'/.local/share/freechains-liferea/'
+
 local LOG = assert(io.open('/tmp/freechains-liferea-log.txt','a+'))
 --local LOG = io.stderr
 
 local CFG = {
-    first  = true,
-    chains = {}
+    first   = true,
+    chains  = {},
+    friends = {},
 }
 
 function CFG_ (cmd)
-    local file = os.getenv('HOME')..'/.config/freechains-liferea.json'
     if cmd == 'load' then
-        local f = io.open(file)
+        local f = io.open(PATH_CFG)
         if f then
             CFG = json.decode(f:read('*a'))
             f:close()
         end
     else
-        local f = assert(io.open(file,'w'))
+        local f = assert(io.open(PATH_CFG,'w'))
         f:write(json.encode(CFG)..'\n')
         f:close()
     end
+end
+
+function MINE (chain)
+    return (chain == '/'..CFG.nick)
 end
 
 CFG_('load')
@@ -56,14 +63,39 @@ if CMD == nil then
     if CFG.first then
         CFG.first = false
         CFG.port  = 8330
+        CFG.path  = PATH_DATA
+        EXE('freechains host create '..CFG.path)
+        EXE_BG('freechains host start '..CFG.path)
+
+        local z = (
+            'zenity --forms --title="Welcome to Freechains!"'   ..
+            '   --separator="\t"'               ..
+            '   --text="Personal information"'               ..
+            '   --add-entry="Nickname:"'                   ..
+            '   --add-password="Password:"'                     ..
+            ''
+        )
+        local ret = EXE(z)
+        if not ret then
+            LOG:write('ERR: '..CMD..'\n')
+            goto END
+        end
+        local nick,pass = string.match(ret, '^(.*)\t(.*)$')
+        CFG.nick = nick
+        assert(not string.find(nick,'%W'), 'nickname should only contain alphanumeric characters')
+
+        local ret = EXE_FC('freechains crypto create pubpvt '..pass)
+        local pub,pvt = string.match(ret, '^([^\n]*)\n(.*)\n')
+        CFG.keys = { pub=pub, pvt=pvt }
+        CFG.friends[pub] = nick
+
         CFG_('save')
-        EXE('freechains host create /data/freechains/data/')
-        EXE_BG('freechains host start /data/freechains/data/')
-        EXE_FC('freechains chain join /')
+
+        EXE_FC('freechains chain join /'..nick..' pubpvt '..pub..' '..pvt)
         EXE_BG('liferea')
-        EXE('dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://chain-atom-/"')
+        EXE('dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://chain-atom-/'..nick..'"')
     else
-        EXE_BG('freechains host start /data/freechains/data/')
+        EXE_BG('freechains host start '..CFG.path)
         EXE_BG('liferea')
     end
     os.exit(0)
@@ -186,7 +218,7 @@ elseif string.sub(CMD,1,21) == 'freechains chain post' then
     local file = os.tmpname()..'.pay'
     local f = assert(io.open(file,'w')):write(pay..'\nEOF\n')
     f:close()
-    EXE_FC(CMD..' file utf8 '..file, '--utf8-eof=EOF')
+    EXE_FC(CMD..' file utf8 '..file, '--utf8-eof=EOF --sign='..CFG.keys.pvt)
 
 elseif string.sub(CMD,1,21) == 'freechains chain atom' then
 
@@ -226,11 +258,15 @@ elseif string.sub(CMD,1,21) == 'freechains chain atom' then
     for block in iter(chain) do
         local payload = block.hashable.payload
         local title = escape(string.match(payload,'([^\n]*)'))
+        local signed = block.signature==json.util.null and 'Not signed' or
+            'Signed by '..(CFG.friends[block.signature.pub] or string.sub(block.signature.pub,1,9))
 
         payload = payload .. [[
 
 
 -------------------------------------------------------------------------------
+
+]]..signed..[[
 
 <!--
 - [X](liferea:/]]..chain..'/'..block.hash..[[/?cmd=republish)
@@ -241,7 +277,7 @@ Inappropriate Contents
 ]]
 
         -- markdown
---if false then
+if true then
         do
             local tmp = os.tmpname()
             local md = assert(io.popen('pandoc -r markdown -w html > '..tmp, 'w'))
@@ -252,7 +288,7 @@ Inappropriate Contents
             html:close()
             os.remove(tmp)
         end
---end
+end
 
         payload = escape(payload)
 
@@ -274,7 +310,7 @@ Inappropriate Contents
         entry = gsub(entry, '__DATE__',    os.date('!%Y-%m-%dT%H:%M:%SZ', 25000))
         entry = gsub(entry, '__PAYLOAD__', escape([[
 <ul>
-]]..(chain~='/' and '' or [[
+]]..(not MINE(chain) and '' or [[
 <li> <a href="freechains://chain-join">[X]</a> join new chain
 ]])..[[
 <li> <a href="freechains://chain-post-]]..chain..[[">[X]</a> post to "]]..chain..[["
