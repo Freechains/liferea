@@ -5,16 +5,18 @@
 local socket = require 'socket'
 local json   = require 'json'
 
-local PATH_CFG  = os.getenv('HOME')..'/.config/freechains-liferea.json'
-local PATH_DATA = os.getenv('HOME')..'/.local/share/freechains-liferea/'
-local PATH_LOG  = os.getenv('HOME')..'/.local/share/freechains-liferea/log.txt'
+local PATH_CFG   = os.getenv('HOME')..'/.config/freechains-liferea.json'
+local PATH_SHARE = os.getenv('HOME')..'/.local/share/freechains-liferea/'
+local PATH_DATA  = PATH_SHARE..'data/'
+local PATH_LOG   = PATH_SHARE..'log.txt'
+os.execute('mkdir -p '..PATH_SHARE)
 
-os.execute('mkdir '..PATH_DATA)
 local LOG = assert(io.open(PATH_LOG,'a+'))
 --local LOG = io.stderr
 
 local CFG = {
     first   = true,
+    path    = PATH_DATA,
     chains  = {},
     friends = {},
 }
@@ -33,6 +35,13 @@ function CFG_ (cmd)
     end
 end
 
+function CFG_chain (chain)
+    local t = CFG.chains[chain] or { peers={} }
+    CFG.chains[chain] = t
+    CFG_('save')
+    return t
+end
+
 function MINE (chain)
     return (chain == '/'..CFG.nick)
 end
@@ -42,11 +51,13 @@ CFG_('load')
 -------------------------------------------------------------------------------
 
 function EXE (cmd)
-    LOG:write('EXE: '..cmd..'\n')
+    --LOG:write('EXE: '..cmd..'\n')
     local f = io.popen(cmd)
     local ret = f:read("*a")
     local ok = f:close()
-    return ok and ret
+    assert(not ok or ret=='' or string.sub(ret,-1,-1)=='\n')
+    --LOG:write('>>> ret='..tostring(ret)..'\n')
+    return ok and string.sub(ret,1,-2)
 end
 
 function EXE_BG (cmd)
@@ -66,17 +77,13 @@ LOG:write('CMD: '..tostring(CMD)..'\n')
 if CMD == nil then
     if CFG.first then
         CFG.first = false
-        CFG.port  = 8330
-        CFG.path  = PATH_DATA
-        EXE('freechains host create '..CFG.path)
-        EXE_BG('freechains host start '..CFG.path)
 
         local z = (
             'zenity --forms --title="Welcome to Freechains!"'   ..
-            '   --separator="\t"'               ..
-            '   --text="Personal information"'               ..
-            '   --add-entry="Nickname:"'                   ..
+            '   --separator="\t"'                               ..
+            '   --add-entry="Nickname:"'                        ..
             '   --add-password="Password:"'                     ..
+            '   --add-entry="Port:"'                            ..
             ''
         )
         local ret = EXE(z)
@@ -84,20 +91,28 @@ if CMD == nil then
             LOG:write('ERR: '..CMD..'\n')
             goto END
         end
-        local nick,pass = string.match(ret, '^(.*)\t(.*)$')
-        CFG.nick = nick
+        local nick,pass,port = string.match(ret, '^(.*)\t(.*)\t(.*)$')
         assert(not string.find(nick,'%W'), 'nickname should only contain alphanumeric characters')
 
+        CFG.nick = nick
+        CFG.port = (port ~= '') and port or '8330'
+
+        EXE('freechains host create '..CFG.path..' '..CFG.port)
+        EXE_BG('freechains host start '..CFG.path)
+        EXE('sleep 0.5')
+
         local ret = EXE_FC('freechains crypto create pubpvt '..pass)
-        local pub,pvt = string.match(ret, '^([^\n]*)\n(.*)\n')
+        local pub,pvt = string.match(ret, '^([^\n]*)\n(.*)$')
         CFG.keys = { pub=pub, pvt=pvt }
         CFG.friends[pub] = nick
 
+        local chain = '/'..nick
+
         CFG_('save')
 
-        EXE_FC('freechains chain join /'..nick..' pubpvt '..pub..' '..pvt)
+        EXE_FC('freechains chain join '..chain..' pubpvt '..pub..' '..pvt)
         EXE_BG('liferea')
-        EXE('dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://chain-atom-/'..nick..'"')
+        EXE('dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://chain-atom-'..chain..'"')
     else
         EXE_BG('freechains host start '..CFG.path)
         EXE_BG('liferea')
@@ -180,8 +195,7 @@ function iter (chain)
 
     return coroutine.wrap(
         function ()
-            local cfg = CFG.chains[chain] or {}
-            CFG.chains[chain] = cfg
+            local cfg = CFG_chain(chain)
             if cfg.heads then
                 for _,hash in ipairs(cfg.heads) do
                     one(hash,true)
@@ -201,12 +215,28 @@ end
 
 if CMD == 'freechains chain join' then
 
-    local chain = EXE('zenity --entry --title="Join new chain" --text="Chain path:"')
-    if not chain then
+    --local z = EXE('zenity --entry --title="Join new chain" --text="Chain path:"')
+    local z = (
+        'zenity --forms --title="Join new chain"' ..
+        '   --separator="\t"'          ..
+        '   --add-entry="Chain path:"' ..
+        '   --add-entry="First peer:"' ..
+        ''
+    )
+
+    local ret = EXE(z)
+    if not ret then
         LOG:write('ERR: '..CMD..'\n')
         goto END
     end
-    chain = string.sub(chain,1,-2)
+    local chain,peer = string.match(ret, '^(.*)\t(.*)$')
+
+    if (peer ~= '') then
+        local t = CFG_chain(chain).peers
+        t[peer] = true
+        CFG_('save')
+    end
+
     EXE_FC(CMD..' '..chain)
     EXE('dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://chain-atom-'..chain..'"')
 
@@ -263,7 +293,7 @@ elseif string.sub(CMD,1,21) == 'freechains chain atom' then
         local payload = block.hashable.payload
         local title = escape(string.match(payload,'([^\n]*)'))
         local signed = block.signature==json.util.null and 'Not signed' or
-            'Signed by '..(CFG.friends[block.signature.pub] or string.sub(block.signature.pub,1,9))
+            'Signed by '..(CFG.friends[block.signature.pub] or '@'..string.sub(block.signature.pub,1,9))
 
         payload = payload .. [[
 
