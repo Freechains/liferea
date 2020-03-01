@@ -17,6 +17,11 @@ local LOG = assert(io.open(PATH_LOG,'a+'))
 local CFG = {
     first   = true,
     path    = PATH_DATA,
+    nick    = 'anon',
+    keys    = {
+        pub = nil,
+        pvt = nil,
+    },
     chains  = {},
     friends = {},
 }
@@ -42,8 +47,22 @@ function CFG_chain (chain)
     return t
 end
 
+function CFG_peers (chain)
+    local ps = {}
+    for p in pairs(CFG_chain(chain).peers) do
+        ps[#ps+1] = p
+    end
+    return ps
+end
+
 function MINE (chain)
-    return (chain == '/'..CFG.nick)
+    return (chain == '/'..CFG.keys.pub)
+end
+
+function NICK (chain)
+    local pub  = string.sub(chain,2)
+    local nick = CFG.friends[pub]
+    return (nick and '/'..nick) or chain
 end
 
 CFG_('load')
@@ -56,8 +75,12 @@ function EXE (cmd)
     local ret = f:read("*a")
     local ok = f:close()
     --LOG:write('>>> ret='..tostring(ret)..'\n')
-    if ok and string.sub(ret,-1,-1)=='\n' then
-        ret = string.sub(ret,1,-2)  -- except "--text-info" enters here
+    if ok then
+        if string.sub(ret,-1,-1)=='\n' then
+            ret = string.sub(ret,1,-2)  -- except "--text-info" enters here
+        end
+    else
+        LOG:write('ERR: '..cmd..'\n')
     end
     return ok and ret
 end
@@ -76,7 +99,7 @@ end
 local CMD = (...)
 LOG:write('CMD: '..tostring(CMD)..'\n')
 
-if CMD == nil then
+if CMD==nil or tonumber(CMD) then
     if CFG.first then
         CFG.first = false
 
@@ -85,19 +108,15 @@ if CMD == nil then
             '   --separator="\t"'                               ..
             '   --add-entry="Nickname:"'                        ..
             '   --add-password="Password:"'                     ..
-            '   --add-entry="Port:"'                            ..
             ''
         )
         local ret = EXE(z)
-        if not ret then
-            LOG:write('ERR: '..CMD..'\n')
-            goto END
-        end
-        local nick,pass,port = string.match(ret, '^(.*)\t(.*)\t(.*)$')
+        if not ret then goto END end
+        local nick,pass = string.match(ret, '^(.*)\t(.*)$')
         assert(not string.find(nick,'%W'), 'nickname should only contain alphanumeric characters')
 
         CFG.nick = nick
-        CFG.port = (port ~= '') and port or '8330'
+        CFG.port = CMD or '8330'
 
         EXE('freechains host create '..CFG.path..' '..CFG.port)
         EXE_BG('freechains host start '..CFG.path)
@@ -108,12 +127,13 @@ if CMD == nil then
         CFG.keys = { pub=pub, pvt=pvt }
         CFG.friends[pub] = nick
 
-        local chain = '/'..nick
+        local chain = '/'..pub
 
         CFG_('save')
 
         EXE_FC('freechains chain join '..chain..' pubpvt '..pub..' '..pvt)
         EXE_BG('liferea')
+        EXE('sleep 1')
         EXE('dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://chain-atom-'..chain..'"')
     else
         EXE_BG('freechains host start '..CFG.path)
@@ -215,7 +235,20 @@ end
 
 -------------------------------------------------------------------------------
 
-if CMD == 'freechains chain join' then
+if string.sub(CMD,1,15) == 'freechains nick' then
+
+    local pub = string.match(CMD, ' ([^ ]*)$')
+    local z = EXE('zenity --entry --title="Add nickname for" '..pub..' --text="Nickname:"')
+    local nick = EXE(z)
+    if not nick then goto END end
+
+    CFG.friends[pub] = nick
+    CFG_('save')
+
+    EXE_FC('freechains chain join /'..pub..' '..pub)
+    EXE('dbus-send --session --dest=org.gnome.feed.Reader --type=method_call /org/gnome/feed/Reader org.gnome.feed.Reader.Subscribe "string:|freechains-liferea freechains://chain-atom-/'..pub..'"')
+
+elseif CMD == 'freechains chain join' then
 
     --local z = EXE('zenity --entry --title="Join new chain" --text="Chain path:"')
     local z = (
@@ -225,12 +258,9 @@ if CMD == 'freechains chain join' then
         '   --add-entry="First peer:"' ..
         ''
     )
-
     local ret = EXE(z)
-    if not ret then
-        LOG:write('ERR: '..CMD..'\n')
-        goto END
-    end
+    if not ret then goto END end
+
     local chain,peer = string.match(ret, '^(.*)\t(.*)$')
 
     if (peer ~= '') then
@@ -246,15 +276,25 @@ elseif string.sub(CMD,1,21) == 'freechains chain post' then
 
     local chain = string.match(CMD, ' ([^ ]*)$')
     local pay = EXE('zenity --text-info --editable --title="Publish to '..chain..'"')
-    if not pay then
-        LOG:write('ERR: '..CMD..'\n')
-        goto END
-    end
+    if not pay then goto END end
 
     local file = os.tmpname()..'.pay'
     local f = assert(io.open(file,'w')):write(pay..'\nEOF\n')
     f:close()
     EXE_FC(CMD..' file utf8 '..file, '--utf8-eof=EOF --sign='..CFG.keys.pvt)
+
+elseif string.sub(CMD,1,22) == 'freechains chain bcast' then
+
+    local chain = string.match(CMD, ' ([^ ]*)$')
+    local f = io.popen('zenity --progress --percentage=0 --title="Broadcast '..chain..'"', 'w')
+    local ps = CFG_peers(chain)
+    for i,p in ipairs(ps) do
+        f:write('# '..p..'\n')
+        --EXE('sleep 1')
+        EXE_FC('freechains chain send '..chain..' '..p)
+        f:write(math.floor(100*(i/#ps))..'\n')
+    end
+    f:close()
 
 elseif string.sub(CMD,1,21) == 'freechains chain atom' then
 
@@ -294,22 +334,33 @@ elseif string.sub(CMD,1,21) == 'freechains chain atom' then
     for block in iter(chain) do
         local payload = block.hashable.payload
         local title = escape(string.match(payload,'([^\n]*)'))
-        local signed = block.signature==json.util.null and 'Not signed' or
-            'Signed by '..(CFG.friends[block.signature.pub] or '@'..string.sub(block.signature.pub,1,9))
+        local pub = block.signature and block.signature.pub
+        local author = 'Signed by '
+        do
+            if block.signature == json.util.null then
+                author = author .. 'Not signed'
+            else
+                local nick = CFG.friends[pub]
+                if nick then
+                    author = author .. nick
+                else
+                    --author = author .. '[@'..string.sub(pub,1,9)..'](freechains://nick-'..pub..')'
+                    author = author .. '<a href="freechains://nick-'..pub..'">@'..string.sub(pub,1,9)..'</a>'
+                end
+            end
+        end
 
         payload = payload .. [[
 
 
 -------------------------------------------------------------------------------
 
-]]..signed..[[
+]]..author..[[
 
-<!--
-- [X](liferea:/]]..chain..'/'..block.hash..[[/?cmd=republish)
-Republish Contents
-- [X](liferea:/]]..chain..'/'..block.hash..[[/?cmd=removal)
-Inappropriate Contents
--->
+<a href=xxx> like </a>
+
+<a href=yyy> dislike </a>
+
 ]]
 
         -- markdown
@@ -339,6 +390,8 @@ end
 
     -- MENU
     do
+        local ps = table.concat(CFG_peers(chain),',')
+
         entry = TEMPLATES.entry
         entry = gsub(entry, '__TITLE__',   'Menu')
         entry = gsub(entry, '__CHAIN__',   chain)
@@ -349,14 +402,15 @@ end
 ]]..(not MINE(chain) and '' or [[
 <li> <a href="freechains://chain-join">[X]</a> join new chain
 ]])..[[
-<li> <a href="freechains://chain-post-]]..chain..[[">[X]</a> post to "]]..chain..[["
+<li> <a href="freechains://chain-post-]]..chain..[[">[X]</a> post to "]]..NICK(chain)..[["
+<li> <a href="freechains://chain-bcast-]]..chain..[[">[X]</a> broadcast to peers (]]..ps..[[)
 </ul>
 ]]))
         entries[#entries+1] = entry
     end
 
     feed = TEMPLATES.feed
-    feed = gsub(feed, '__TITLE__',   chain)
+    feed = gsub(feed, '__TITLE__',   NICK(chain))
     feed = gsub(feed, '__UPDATED__', os.date('!%Y-%m-%dT%H:%M:%SZ', os.time()))
     feed = gsub(feed, '__CHAIN__',   chain)
     feed = gsub(feed, '__ENTRIES__', table.concat(entries,'\n'))
