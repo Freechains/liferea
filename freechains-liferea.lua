@@ -1,12 +1,16 @@
 #!/usr/bin/env lua5.3
 
+-- xhost +
+
 local socket = require 'socket'
 local json   = require 'json'
 
 local PATH_CFG  = os.getenv('HOME')..'/.config/freechains-liferea.json'
 local PATH_DATA = os.getenv('HOME')..'/.local/share/freechains-liferea/'
+local PATH_LOG  = os.getenv('HOME')..'/.local/share/freechains-liferea/log.txt'
 
-local LOG = assert(io.open('/tmp/freechains-liferea-log.txt','a+'))
+os.execute('mkdir '..PATH_DATA)
+local LOG = assert(io.open(PATH_LOG,'a+'))
 --local LOG = io.stderr
 
 local CFG = {
