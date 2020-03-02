@@ -15,7 +15,8 @@ if string.sub(cmd,1,13) ~= 'freechains://' then
     os.exit(0)
 
 else
-    os.execute('freechains-ui '..string.gsub(cmd,'-',' '))
+    cmd = string.gsub(string.sub(cmd,14), '-', ' ')
+    os.execute('freechains-ui '..cmd)
 
 end
 
